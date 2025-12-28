@@ -1,0 +1,31 @@
+name: Altr Daily Auto Claim # 任务名称
+
+on:
+  schedule:
+    # 定时任务：每天国际标准时间 01:00 (北京时间上午 09:00) 运行
+    - cron: '0 1 * * *'
+  workflow_dispatch: # 允许你手动点击按钮触发测试
+
+jobs:
+  build:
+    runs-on: ubuntu-latest # 使用最新的 Ubuntu 服务器
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3 # 第一步：下载你的代码仓库
+
+      - name: Set up Python
+        uses: actions/setup-python@v4 # 第二步：安装 Python 环境
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: | # 第三步：安装依赖库
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Sign-in Script
+        env: # 将 GitHub Secrets 里的密码注入到环境变量中
+          ALTR_EMAIL: ${{ secrets.ALTR_EMAIL }}
+          ALTR_PASSWORD: ${{ secrets.ALTR_PASSWORD }}
+        run: python main.py # 第四步：运行你的 Python 脚本
