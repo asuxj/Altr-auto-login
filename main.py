@@ -1,5 +1,6 @@
 import time
 import os
+import random
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
@@ -10,7 +11,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 # ================= 配置区域 =================
 USER_EMAIL = os.environ.get("ALTR_EMAIL")
 USER_PASSWORD = os.environ.get("ALTR_PASSWORD")
-LOGIN_URL = "https://console.altr.cc/sign-in"
+# 修改策略：从根目录开始访问，不要直接访问 sign-in
+BASE_URL = "https://console.altr.cc/" 
 # ===========================================
 
 def run_auto_claim():
@@ -20,18 +22,20 @@ def run_auto_claim():
         print(">>> [错误] 未检测到账号或密码，请检查 GitHub Secrets 设置！")
         return
 
-    # --- 浏览器配置 (关键修改) ---
+    # --- 浏览器配置 (究极隐身模式) ---
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless")
+    options.add_argument("--headless=new") # 使用新版无头模式，更难被检测
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
+    options.add_argument("--ignore-certificate-errors")
+    options.add_argument("--allow-running-insecure-content")
     
-    # 1. 伪造 User-Agent (伪装成普通 Windows 电脑)
+    # 伪装 User-Agent (模拟最新版 Chrome)
     options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
-    # 2. 移除 "自动化控制" 标记 (防止被网站 JS 检测到)
+    # 禁用自动化特征
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
@@ -39,86 +43,111 @@ def run_auto_claim():
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
 
-    # 执行 CDP 命令，彻底隐藏 webdriver 属性
+    # CDP 注入：这是目前绕过检测最有效的方法之一
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
         "source": """
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            })
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.navigator.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
         """
     })
 
     try:
-        print(f">>> [登录] 访问页面: {LOGIN_URL}")
-        driver.get(LOGIN_URL)
+        print(f">>> [访问] 正在打开首页: {BASE_URL}")
+        driver.get(BASE_URL)
+        time.sleep(5) # 等待页面加载和自动重定向
 
-        # --- 智能判断逻辑 ---
-        # 我们不直接死等邮箱输入框，因为可能已经进去了
-        print(">>> [检测] 正在判断页面状态...")
-        
+        # 打印当前 URL 看看是否自动跳到了 sign-in
+        print(f">>> [定位] 当前页面 URL: {driver.current_url}")
+
+        # --- 智能登录判断 ---
+        # 如果还在首页或者 404 页面，尝试寻找 "Sign in" 按钮
+        if "sign-in" not in driver.current_url and "dashboard" not in driver.current_url:
+            print(">>> [导航] 未自动跳转登录页，尝试寻找登录入口...")
+            try:
+                # 寻找页面上包含 "Sign in" 或 "Log in" 的链接/按钮
+                login_btn = driver.find_element(By.XPATH, "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sign in')] | //button[contains(text(), 'Sign in')]")
+                print(">>> [动作] 找到登录按钮，点击跳转...")
+                driver.execute_script("arguments[0].click();", login_btn)
+                time.sleep(3)
+            except:
+                print(">>> [警告] 没找到明显的登录按钮，尝试强制跳转 /sign-in ...")
+                driver.get("https://console.altr.cc/sign-in")
+                time.sleep(3)
+
+        # --- 执行登录 ---
         try:
-            # 尝试 1: 寻找邮箱输入框 (正常流程)
+            print(">>> [登录] 寻找输入框...")
+            # 这里的等待时间设长一点
             email_input = WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='email']"))
             )
-            print(">>> [登录] 发现登录表单，开始登录...")
+            print(">>> [登录] 输入账号...")
             email_input.clear()
-            email_input.send_keys(USER_EMAIL)
+            # 模拟人工打字延迟（虽然在无头模式下可能没用，但有时候能骗过 JS）
+            for char in USER_EMAIL:
+                email_input.send_keys(char)
+                time.sleep(0.05)
 
             password_input = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+            password_input.clear()
             password_input.send_keys(USER_PASSWORD)
+            time.sleep(0.5)
 
-            # 寻找提交按钮
             submit_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-            driver.execute_script("arguments[0].click();", submit_btn) # 强制点击
-            print(">>> [登录] 提交完成，等待跳转...")
-            time.sleep(5) # 给一点反应时间
+            print(">>> [登录] 点击提交...")
+            driver.execute_script("arguments[0].click();", submit_btn)
+            
+            # 等待登录完成，检测 URL 变化
+            WebDriverWait(driver, 20).until(lambda d: "sign-in" not in d.current_url)
+            print(f">>> [跳转] 登录成功，当前 URL: {driver.current_url}")
 
-        except Exception:
-            # 如果找不到输入框，检查是否已经登录成功 (比如因为 Cookie 或者网站允许 Guest 访问)
-            print(">>> [跳过] 未找到登录框 (可能已登录或页面结构改变)，尝试直接寻找 Rewards 链接...")
-            # 这里不抛出错误，继续往下走，看看能不能找到 Rewards
+        except Exception as e:
+            # 如果这里报错，可能是已经登录了（Cookies 复用？虽然不太可能），或者根本没找到输入框
+            print(f">>> [登录检查] 登录流程遇到问题 (或已登录): {str(e)[:100]}")
+            # 不退出，继续尝试找 Rewards，万一就在里面呢
 
-        # --- 跳转与签到 ---
-        # 无论刚才是否登录成功，我们都尝试去找 Rewards 链接
-        print(">>> [导航] 寻找 Rewards 入口...")
-        
-        # 使用更宽松的等待时间
-        rewards_link = WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable((By.XPATH, "//a[@href='/rewards']"))
-        )
-        print(">>> [导航] 找到链接，进入 Rewards 页面...")
-        driver.execute_script("arguments[0].click();", rewards_link)
+        # --- 寻找 Rewards ---
+        print(">>> [导航] 准备进入 Rewards 页面...")
+        # 强制访问 Rewards 页面，比找按钮更稳
+        driver.get("https://console.altr.cc/rewards")
+        time.sleep(5) 
 
-        print(">>> [签到] 检查按钮状态...")
-        # 等待签到按钮
-        claim_button = WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "button.w-full"))
-        )
+        try:
+            print(">>> [签到] 扫描签到按钮...")
+            # 重新定位按钮
+            claim_button = WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "button.w-full"))
+            )
+            
+            # 获取页面源码片段用于调试
+            # print(claim_button.get_attribute('outerHTML'))
 
-        btn_text = claim_button.text
-        is_disabled = claim_button.get_attribute("disabled")
-        print(f">>> [状态] 按钮文字: '{btn_text}'")
+            btn_text = claim_button.text
+            is_disabled = claim_button.get_attribute("disabled")
+            
+            print(f">>> [状态] 按钮文字: [{btn_text}]")
 
-        if "Claimed today" in btn_text or is_disabled:
-            print(">>> [结果] ✅ 今天已经签到过了。")
-        else:
-            print(">>> [动作] 点击签到...")
-            driver.execute_script("arguments[0].click();", claim_button)
-            time.sleep(5)
-            print(">>> [结果] ✅ 签到动作完成。")
+            if "Claimed today" in btn_text or is_disabled:
+                print(">>> [结果] ✅ 任务完成：今日已签到。")
+            else:
+                print(">>> [动作] 发现未签到，点击按钮...")
+                driver.execute_script("arguments[0].click();", claim_button)
+                time.sleep(5)
+                print(">>> [结果] ✅ 签到指令已执行。")
+                
+        except Exception as e:
+            print(f">>> [失败] 无法找到签到按钮或页面加载失败。")
+            # 终极调试：如果失败，打印页面标题和少量内容
+            print(f">>> [调试] 页面标题: {driver.title}")
+            print(f">>> [调试] 页面内容摘要: {driver.find_element(By.TAG_NAME, 'body').text[:300].replace('\n', ' ')}")
 
     except Exception as e:
-        print(f">>> [错误] 依然失败: {e}")
-        # 如果再次失败，打印当前页面 body 的文本，看看显示了什么文字
-        try:
-            body_text = driver.find_element(By.TAG_NAME, "body").text[:500]
-            print(f">>> [调试] 页面当前文字内容: {body_text}")
-        except:
-            pass
+        print(f">>> [致命错误] 脚本崩溃: {e}")
 
     finally:
-        print(">>> [结束] 清理资源...")
+        print(">>> [结束] 关闭浏览器")
         driver.quit()
 
 if __name__ == "__main__":
