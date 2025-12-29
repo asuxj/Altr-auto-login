@@ -18,62 +18,79 @@ ACCOUNTS_ENV = os.environ.get("ZAMPTO_ACCOUNTS")
 def run_renewal_for_user(username, password):
     print(f"\n>>> [开始] 正在处理账号: {username}")
     
-    # --- 1. 增强版 Chrome 配置 (针对 GitHub Actions 优化) ---
+    # --- 1. 防崩溃浏览器配置 ---
     options = webdriver.ChromeOptions()
-    # 使用新版无头模式 (更稳定，渲染更接近真实浏览器)
+    # 使用新版无头模式
     options.add_argument('--headless=new') 
+    
+    # 核心防崩溃参数 (针对 GitHub Actions 环境)
     options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-dev-shm-usage') # 解决共享内存不足导致的崩溃
     options.add_argument('--disable-gpu')
+    options.add_argument('--disable-software-rasterizer') # 关键：防止图形渲染崩溃
+    options.add_argument('--disable-extensions')
+    options.add_argument('--disable-infobars')
     options.add_argument('--window-size=1920,1080')
-    options.add_argument('--remote-debugging-port=9222') # 增加调试端口，防止端口冲突
-    # 关键：移除“自动化控制”特征，防止被网站轻易识别
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    # 伪装 User-Agent
+    
+    # 伪装 User-Agent (防止被识别为爬虫)
     options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
     driver = None
     try:
-        # 自动下载并匹配最新版驱动
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 25) # 稍微延长等待时间
+        wait = WebDriverWait(driver, 30) # 延长等待时间到30秒
 
         # --- 2. 登录流程 ---
         print(f">>> [登录] 打开页面: {LOGIN_URL}")
         driver.get(LOGIN_URL)
         
-        # --- 调试：打印当前页面标题，检查是否被 Cloudflare 拦截 ---
-        print(f">>> [调试] 当前页面标题: {driver.title}")
-        
-        # 智能查找用户名输入框
+        # 调试信息
+        print(f">>> [调试] 页面标题: {driver.title}")
+
+        # --- 适配 Logto 登录系统 ---
+        # Logto 的用户名输入框 name 通常是 "identifier"
+        # 我们查找: name="identifier" (Logto专用) 或 email 或 username
+        print(">>> [登录] 正在寻找账号输入框...")
         user_input = wait.until(EC.presence_of_element_located(
-            (By.CSS_SELECTOR, "input[name='email'], input[name='username'], input[name='user']")
+            (By.CSS_SELECTOR, "input[name='identifier'], input[name='email'], input[name='username']")
         ))
         user_input.clear()
         user_input.send_keys(username)
-        
-        # 查找密码输入框
+        print(">>> [登录] 已输入账号")
+        time.sleep(0.5) # 稍微停顿
+
+        # 寻找密码输入框
         pwd_input = driver.find_element(By.NAME, "password")
         pwd_input.clear()
         pwd_input.send_keys(password)
-        
-        # 点击登录
+        print(">>> [登录] 已输入密码")
+        time.sleep(0.5)
+
+        # 点击登录按钮
         submit_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
         submit_btn.click()
-        print(">>> [登录] 提交表单，等待跳转...")
+        print(">>> [登录] 点击提交，等待跳转...")
 
         # 验证是否登录成功
         try:
+            # 等待 URL 变化，或者页面出现 Dashboard 字样
             wait.until(EC.url_matches(r"overview|dashboard"))
             print(">>> [登录] 登录成功！")
         except TimeoutException:
-            # 如果超时，打印一下当前 URL，看看是不是还在登录页
-            print(f">>> [错误] 登录后未跳转，当前 URL: {driver.current_url}")
+            print(f">>> [错误] 登录超时，当前 URL: {driver.current_url}")
+            # 如果还在登录页，可能是密码错误或由于JS加载慢导致
+            # 尝试打印页面上的错误提示（如果有）
+            try:
+                error_msg = driver.find_element(By.CSS_SELECTOR, "[role='alert'], .error").text
+                print(f">>> [页面提示] {error_msg}")
+            except:
+                pass
             raise Exception("Login timeout")
 
         # --- 3. 获取服务器列表 ---
         server_links = []
+        # 这里的逻辑保持不变
         buttons = driver.find_elements(By.CSS_SELECTOR, "a[href*='server?id=']")
         for btn in buttons:
             href = btn.get_attribute("href")
@@ -87,14 +104,18 @@ def run_renewal_for_user(username, password):
             print(f"--- 正在处理服务器: {link} ---")
             driver.get(link)
             try:
+                # 寻找续费按钮
                 renew_btn = wait.until(EC.element_to_be_clickable(
                     (By.CSS_SELECTOR, "a.action-button[onclick*='handleServerRenewal']")
                 ))
+                
+                # 滚动并点击
                 driver.execute_script("arguments[0].scrollIntoView();", renew_btn)
                 time.sleep(1) 
                 renew_btn.click()
                 print(">>> [操作] 点击了续费按钮")
                 
+                # 处理弹窗
                 try:
                     WebDriverWait(driver, 3).until(EC.alert_is_present())
                     driver.switch_to.alert.accept()
@@ -105,27 +126,17 @@ def run_renewal_for_user(username, password):
                 print(">>> [成功] 续费指令已发送")
                 time.sleep(2)
             except TimeoutException:
-                print(">>> [跳过] 未找到续费按钮")
+                print(">>> [跳过] 未找到续费按钮 (可能已续费)")
             except Exception as e:
-                print(f">>> [出错] 单个服务器处理出错: {e}")
+                print(f">>> [出错] 服务器处理错误: {e}")
 
     except WebDriverException as e:
-        # 专门捕获浏览器崩溃/启动失败的错误
-        print(f">>> [致命错误] 浏览器驱动异常: {e}")
-        if driver:
-            # 尝试打印网页源码，帮助判断是被拦截还是白屏
-            try:
-                print(f">>> [调试] 崩溃时的网页源码(前500字符):\n{driver.page_source[:500]}")
-            except:
-                pass
+        print(f">>> [致命错误] 浏览器崩溃或驱动异常: {e}")
+        # 如果再次崩溃，查看是否是因为内存不足
+        print(">>> [建议] 如果持续崩溃，可能是 GitHub Runner 内存不足。")
 
     except Exception as e:
-        print(f">>> [失败] 账号 {username} 发生逻辑错误: {e}")
-        if driver:
-             try:
-                print(f">>> [调试] 错误时的网页标题: {driver.title}")
-             except:
-                pass
+        print(f">>> [失败] 账号 {username} 逻辑错误: {e}")
 
     finally:
         if driver:
@@ -134,7 +145,7 @@ def run_renewal_for_user(username, password):
 
 def main():
     if not ACCOUNTS_ENV:
-        print(">>> [错误] 未检测到环境变量 'ZAMPTO_ACCOUNTS'。")
+        print(">>> [错误] 环境变量 ZAMPTO_ACCOUNTS 未设置。")
         sys.exit(1)
     
     account_list = ACCOUNTS_ENV.split(',')
