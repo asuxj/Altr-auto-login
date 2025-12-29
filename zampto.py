@@ -93,7 +93,6 @@ def run_renewal_for_user(username, password):
                 login_success = True
             else:
                 print(f">>> [错误] 登录彻底超时，当前停留: {current_url}")
-                # 尝试打印页面错误提示
                 try: 
                     print(f"    提示: {driver.find_element(By.CSS_SELECTOR, '.error, [role=alert]').text}") 
                 except: pass
@@ -150,9 +149,26 @@ def run_renewal_for_user(username, password):
             driver.get(link)
             
             try:
-                # 定位续费按钮
+                # -------------------------------------------------------
+                # 【修改点 1】: 在点击前，先获取“上次续费时间”作为快照
+                # -------------------------------------------------------
+                time_before = ""
+                has_time_element = False
+                try:
+                    # 等待一下元素加载
+                    wait.until(EC.presence_of_element_located((By.ID, "lastRenewalTime")))
+                    time_element = driver.find_element(By.ID, "lastRenewalTime")
+                    time_before = time_element.text.strip()
+                    has_time_element = True
+                    print(f">>> [状态] 当前续费时间: {time_before}")
+                except Exception as e:
+                    print(f">>> [注意] 未找到 lastRenewalTime 元素，将仅依赖弹窗检查。")
+
+                # -------------------------------------------------------
+                # 【修改点 2】: 查找并点击续费按钮
+                # -------------------------------------------------------
                 renew_btn = wait.until(EC.element_to_be_clickable(
-                    (By.CSS_SELECTOR, "a[onclick*='handleServerRenewal']")
+                    (By.CSS_SELECTOR, "a[onclick*='handleServerRenewal'], a.action-button.action-purple")
                 ))
                 
                 # 滚动到按钮位置
@@ -162,17 +178,48 @@ def run_renewal_for_user(username, password):
                 print(">>> [操作] 点击 'Renew Server' 按钮...")
                 renew_btn.click()
                 
-                # 处理弹窗
+                # -------------------------------------------------------
+                # 【修改点 3】: 处理可能出现的弹窗 (Alert)
+                # -------------------------------------------------------
+                # 有些网站点完后会弹出一个 "确定要续费吗？" 或者 "续费成功" 的框
                 try:
-                    WebDriverWait(driver, 3).until(EC.alert_is_present())
+                    WebDriverWait(driver, 5).until(EC.alert_is_present())
                     alert = driver.switch_to.alert
-                    print(f">>> [弹窗] 接受弹窗信息: {alert.text}")
-                    alert.accept()
-                    print(">>> [成功] 弹窗已确认")
+                    print(f">>> [弹窗] 捕捉到弹窗信息: {alert.text}")
+                    alert.accept() # 点击确定
+                    print(">>> [弹窗] 已点击确认")
                 except TimeoutException:
-                    print(">>> [提示] 未检测到弹窗，可能直接续费成功。")
+                    # 如果没有弹窗，可能是直接刷新，或者 AJAX 更新，继续往下走
+                    pass
                 
-                time.sleep(2)
+                # -------------------------------------------------------
+                # 【修改点 4】: 核心验证——检查时间是否发生变化
+                # -------------------------------------------------------
+                if has_time_element:
+                    print(">>> [验证] 正在等待服务器时间更新 (最多10秒)...")
+                    try:
+                        # 使用 lambda 函数每隔 0.5 秒检查一次，直到文字内容变得不一样
+                        WebDriverWait(driver, 10).until(
+                            lambda d: d.find_element(By.ID, "lastRenewalTime").text.strip() != time_before
+                        )
+                        
+                        # 获取更新后的时间
+                        time_after = driver.find_element(By.ID, "lastRenewalTime").text.strip()
+                        print("------------------------------------------------")
+                        print(f"✅ [成功] 续费成功！")
+                        print(f"   时间变更: '{time_before}' -> '{time_after}'")
+                        print("------------------------------------------------")
+                        
+                    except TimeoutException:
+                        print("------------------------------------------------")
+                        print(f"⚠️ [警告] 10秒内时间未发生变化。")
+                        print(f"   可能原因: 1. 续费失败 2. 已达续费上限 3. 网页响应慢")
+                        print(f"   当前时间仍显示: {time_before}")
+                        print("------------------------------------------------")
+                else:
+                    # 如果一开始没找到时间元素，就只能盲等一下
+                    print(">>> [完成] 操作已执行 (因无法读取时间，无法确认结果)。")
+                    time.sleep(2)
                 
             except TimeoutException:
                 print(">>> [跳过] 未在页面上找到续费按钮 (可能已经续费过了)。")
