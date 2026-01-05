@@ -27,32 +27,35 @@ def run_renewal_for_user(username, password):
     """
     print(f"\n>>> [开始] 正在处理账号: {username}")
     
-    # --- 1. 浏览器配置 ---
+    # --- 1. 浏览器配置 (关键修改：增加反检测配置) ---
     options = webdriver.ChromeOptions()
-    options.add_argument('--headless=new') # 无头模式，不显示浏览器界面
+    options.add_argument('--headless=new') # 无头模式
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
-    options.add_argument('--disable-software-rasterizer')
+    options.add_argument('--window-size=1920,1080') # 设置大窗口，避免响应式布局隐藏元素
     options.add_argument('--disable-extensions')
-    options.add_argument('--window-size=1920,1080')
-    # 模拟真实浏览器 User-Agent，防止被拦截
+    
+    # [新增] 屏蔽自动化受控提示，这是绕过简单反爬的关键
+    options.add_argument('--disable-blink-features=AutomationControlled') 
+    # 模拟真实浏览器 User-Agent
     options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
     driver = None
     try:
-        # 安装并启动 Chrome 驱动
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
-        wait = WebDriverWait(driver, 30) # 设置全局等待时间为30秒
+        
+        # [新增] 移除 `navigator.webdriver` 标记，进一步隐藏机器人身份
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        wait = WebDriverWait(driver, 30) # 全局等待30秒
 
         # --- 2. 登录流程 ---
         print(f">>> [登录] 打开页面: {LOGIN_URL}")
         driver.get(LOGIN_URL)
         
-        # 输入账号
         print(">>> [登录] 正在输入账号...")
-        # 等待输入框出现 (支持 identifier, email 或 username 字段名)
         user_input = wait.until(EC.presence_of_element_located(
             (By.CSS_SELECTOR, "input[name='identifier'], input[name='email'], input[name='username']")
         ))
@@ -61,14 +64,11 @@ def run_renewal_for_user(username, password):
         print(">>> [登录] 账号输入完毕")
         
         # 智能等待密码框
-        pwd_input = None
         try:
-            # 方案A: 尝试直接找密码框 (等2秒)
             pwd_input = WebDriverWait(driver, 2).until(
                 EC.visibility_of_element_located((By.NAME, "password"))
             )
         except TimeoutException:
-            # 方案B: 找不到则点击“下一步”
             print(">>> [登录] 进入两步验证模式，点击下一步...")
             next_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
             next_btn.click()
@@ -77,73 +77,81 @@ def run_renewal_for_user(username, password):
                 EC.visibility_of_element_located((By.NAME, "password"))
             )
 
-        # 输入密码
         pwd_input.clear()
         pwd_input.send_keys(password)
-        time.sleep(1) # 稍作停顿，模拟人工
+        time.sleep(1) 
         
-        # 提交登录
         login_btn = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
         login_btn.click()
         print(">>> [登录] 点击提交，等待跳转...")
 
-        # --- 3. 验证登录 & 强制跳转 (核心修复) ---
+        # --- 3. 验证登录 & 强制跳转 ---
         login_success = False
         try:
-            # 等待 URL 变成 overview 或 homepage
             wait.until(EC.url_matches(r"overview|dashboard|homepage"))
             login_success = True
             print(f">>> [登录] 登录成功！当前页面: {driver.current_url}")
         except TimeoutException:
-            # 【双重保险】如果超时了，再检查一次当前 URL
-            current_url = driver.current_url
-            if "homepage" in current_url or "overview" in current_url:
-                print(f">>> [登录] 判定超时但检测到 URL 已变更: {current_url}，视为成功。")
+            # 双重检查
+            if "homepage" in driver.current_url or "overview" in driver.current_url:
                 login_success = True
             else:
-                print(f">>> [错误] 登录彻底超时，当前停留: {current_url}")
-                try: 
-                    print(f"    提示: {driver.find_element(By.CSS_SELECTOR, '.error, [role=alert]').text}") 
-                except: pass
+                print(f">>> [错误] 登录超时，当前URL: {driver.current_url}")
+                # [调试] 登录失败也截图
+                driver.save_screenshot("login_failed.png") 
                 raise Exception("Login verification failed")
 
-        # 只要登录成功，就强制跳转到概览页
         if login_success:
-            if "overview" not in driver.current_url:
-                print(f">>> [导航] 正在强制跳转至服务器列表页: {OVERVIEW_URL}")
-                driver.get(OVERVIEW_URL)
-                # 等待概览页加载
-                wait.until(EC.url_contains("overview"))
-                print(">>> [导航] 已到达概览页")
+            # 强制跳转到 overview，确保我们在正确的页面
+            print(f">>> [导航] 正在强制跳转至服务器列表页: {OVERVIEW_URL}")
+            driver.get(OVERVIEW_URL)
+            wait.until(EC.url_contains("overview"))
+            print(">>> [导航] 已到达概览页，等待数据加载...")
+            time.sleep(5) # [新增] 强制死等5秒，让Ajax请求有时间完成加载
 
-        # --- 4. 获取服务器列表 ---
+        # --- 4. 获取服务器列表 (关键修改) ---
         server_links = []
         try:
             print(">>> [列表] 正在扫描服务器卡片...")
-            # 等待至少一个 server-card 出现，最多等15秒
-            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CLASS_NAME, "server-card")))
+            # [修改] 使用 CSS Selector .server-card，比 Class Name 更稳健
+            # [修改] 等待时间确保足够长，应对慢速网络
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".server-card"))
+            )
             
-            # 找到所有的卡片元素
-            cards = driver.find_elements(By.CLASS_NAME, "server-card")
+            cards = driver.find_elements(By.CSS_SELECTOR, ".server-card")
             print(f">>> [列表] 发现了 {len(cards)} 个服务器卡片。")
             
             for card in cards:
                 try:
-                    # 在当前卡片内查找 Manage 按钮
+                    # 获取服务器名字，用于日志显示
+                    server_name = card.get_attribute("data-server-name") or "Unknown"
+                    server_id = card.get_attribute("data-server-id") or "Unknown"
+                    
+                    # 查找 Manage 按钮
                     link_element = card.find_element(By.CSS_SELECTOR, "a.btn.btn-primary[href*='server?id=']")
                     href = link_element.get_attribute("href")
                     
-                    # 获取服务器名字
-                    server_name = card.get_attribute("data-server-name") or "Unknown"
-                    
                     if href:
-                        print(f"    - 发现服务器: {server_name} (ID: {card.get_attribute('data-server-id')})")
+                        print(f"    - 发现服务器: {server_name} (ID: {server_id})")
                         server_links.append(href)
                 except Exception as loop_e:
                     print(f"    - [警告] 解析某张卡片时出错: {loop_e}")
 
         except TimeoutException:
-            print(">>> [提示] 未找到 'server-card' 元素，可能该账号下没有服务器。")
+            # ================= [调试核心] =================
+            # 如果找不到卡片，这里会执行。
+            # 我们把当前看到的页面保存下来，你就能知道为什么找不到了。
+            print(">>> [提示] 未找到 'server-card' 元素。")
+            print(">>> [调试] 正在保存当前页面截图到 'debug_error.png'...")
+            driver.save_screenshot("debug_error.png")
+            
+            print(">>> [调试] 正在保存页面源码到 'debug_source.html'...")
+            with open("debug_source.html", "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+            
+            print(">>> [调试] 请在脚本同目录下查看上述两个文件，确认页面是否为空白或被拦截。")
+            # =============================================
 
         # --- 5. 逐个续费 ---
         if not server_links:
@@ -154,94 +162,57 @@ def run_renewal_for_user(username, password):
 
         for index, link in enumerate(server_links):
             print(f"\n--- 正在处理第 {index + 1} 个服务器 ---")
-            print(f">>> [跳转] 进入详情页: {link}")
             driver.get(link)
             
             try:
-                # -------------------------------------------------------
-                # 【步骤 1】: 获取操作前的“上次续费时间”，用于判断是否变化
-                # -------------------------------------------------------
+                # 获取上次续费时间作为基准
                 time_before = ""
-                has_time_element = False
                 try:
-                    # 等待一下元素加载
                     wait.until(EC.presence_of_element_located((By.ID, "lastRenewalTime")))
-                    time_element = driver.find_element(By.ID, "lastRenewalTime")
-                    time_before = time_element.text.strip()
-                    has_time_element = True
-                    # 这里不再打印当前时间，以免干扰视线
-                except Exception as e:
-                    print(f">>> [注意] 未找到 lastRenewalTime 元素，将仅依赖弹窗检查。")
+                    time_before = driver.find_element(By.ID, "lastRenewalTime").text.strip()
+                except: pass
 
-                # -------------------------------------------------------
-                # 【步骤 2】: 查找并点击续费按钮
-                # -------------------------------------------------------
+                # 点击续费按钮
                 renew_btn = wait.until(EC.element_to_be_clickable(
                     (By.CSS_SELECTOR, "a[onclick*='handleServerRenewal'], a.action-button.action-purple")
                 ))
                 
-                # 滚动到按钮位置
+                # 滚动到可见区域防止被遮挡
                 driver.execute_script("arguments[0].scrollIntoView();", renew_btn)
                 time.sleep(1) 
                 
                 print(">>> [操作] 点击 'Renew Server' 按钮...")
                 renew_btn.click()
                 
-                # -------------------------------------------------------
-                # 【步骤 3】: 处理可能出现的弹窗 (Alert)
-                # -------------------------------------------------------
+                # 处理弹窗
                 try:
                     WebDriverWait(driver, 5).until(EC.alert_is_present())
                     alert = driver.switch_to.alert
                     print(f">>> [弹窗] 捕捉到信息: {alert.text}")
-                    alert.accept() # 点击确定
-                    print(">>> [弹窗] 已点击确认")
+                    alert.accept()
                 except TimeoutException:
-                    pass # 没有弹窗则继续
+                    pass
                 
-                # -------------------------------------------------------
-                # 【步骤 4】: 验证结果并获取【剩余时长】
-                # -------------------------------------------------------
-                if has_time_element:
-                    print(">>> [验证] 正在等待数据更新...")
-                    try:
-                        # 循环检查，直到 lastRenewalTime 的文字发生变化，代表操作生效了
-                        WebDriverWait(driver, 10).until(
-                            lambda d: d.find_element(By.ID, "lastRenewalTime").text.strip() != time_before
-                        )
-                        
-                        # === 核心修改：这里获取 nextRenewalTime (剩余时长) ===
-                        # 找到 ID 为 nextRenewalTime 的元素，它的内容例如 "1 day 23h 54m"
-                        expiry_element = driver.find_element(By.ID, "nextRenewalTime")
-                        expiry_duration = expiry_element.text.strip()
-
-                        print("------------------------------------------------")
-                        print(f"✅ [成功] 续费成功！")
-                        print(f"   [结果] 续费后有效期: {expiry_duration}")
-                        print("------------------------------------------------")
-                        
-                    except TimeoutException:
-                        print("------------------------------------------------")
-                        print(f"⚠️ [警告] 10秒内数据未发生变化。")
-                        print(f"   可能原因: 1. 续费失败 2. 已达续费上限 3. 网页响应慢")
-                        print("------------------------------------------------")
-                else:
-                    # 如果找不到时间元素，只能盲等
-                    print(">>> [完成] 操作已执行 (因无法读取时间元素，无法确认最终结果)。")
-                    time.sleep(2)
+                # 验证结果
+                print(">>> [验证] 正在等待数据更新...")
+                try:
+                    # 等待时间文字变化
+                    WebDriverWait(driver, 10).until(
+                        lambda d: d.find_element(By.ID, "lastRenewalTime").text.strip() != time_before
+                    )
+                    # 获取剩余时间
+                    expiry_duration = driver.find_element(By.ID, "nextRenewalTime").text.strip()
+                    print("------------------------------------------------")
+                    print(f"✅ [成功] 续费成功！有效期: {expiry_duration}")
+                    print("------------------------------------------------")
+                except TimeoutException:
+                    print(f"⚠️ [警告] 数据未更新，可能续费失败或响应过慢。")
                 
-            except TimeoutException:
-                print(">>> [跳过] 未在页面上找到续费按钮 (可能已经续费过了)。")
             except Exception as e:
-                print(f">>> [出错] 处理该服务器时发生未知错误: {e}")
+                print(f">>> [出错] 处理该服务器时发生错误: {e}")
 
     except Exception as e:
         print(f">>> [失败] 账号 {username} 发生全局错误: {e}")
-        if driver:
-             try:
-                print(f">>> [调试] 当前 URL: {driver.current_url}")
-             except: pass
-
     finally:
         if driver:
             driver.quit()
