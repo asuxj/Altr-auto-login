@@ -39,12 +39,12 @@ jobs:
       # ========================================================
       # 新脚本区域 (Zampto 自动续费)
       # ========================================================
-      - name: Zampto 自动续费
-        env:
+     # - name: Zampto 自动续费
+      #  env:
           # 读取你在 Secrets 里设置的 ZAMPTO_ACCOUNTS
-          ZAMPTO_ACCOUNTS: ${{ secrets.ZAMPTO_ACCOUNTS }}
+      #    ZAMPTO_ACCOUNTS: ${{ secrets.ZAMPTO_ACCOUNTS }}
         # 运行新脚本，-u 参数保证日志实时输出
-        run: python -u zampto.py
+      #  run: python -u zampto.py
 
       # ========================================================
       # 【新增】上传调试文件步骤
