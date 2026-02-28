@@ -1,15 +1,13 @@
-name: Zampto Daily Auto Claim # 任务名称
+name: Zampto Daily Auto Claim
 
 on:
   schedule:
-    # 定时任务：每天国际标准时间 01:00 (北京时间上午 09:00) 运行
     - cron: '0 1 * * *'
-  workflow_dispatch: # 允许手动点击按钮触发测试
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -19,31 +17,25 @@ jobs:
         with:
           python-version: '3.9'
 
+      - name: Install Chrome
+        run: |
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+          google-chrome --version
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install undetected-chromedriver selenium
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # 如果你的 zampto.py 用 Selenium，保留下面这行
-          pip install selenium webdriver_manager
-          # 如果用 requests，也可以加上
-          pip install requests
+          pip install undetected-chromedriver selenium requests
 
-      # ========================================================
-      # Zampto 自动签到
-      # ========================================================
       - name: Zampto 自动签到
         env:
-          # 请在 GitHub Secrets 中添加 ZAMPTO_ACCOUNTS
           ZAMPTO_ACCOUNTS: ${{ secrets.ZAMPTO_ACCOUNTS }}
         run: python -u zampto.py
 
-      # ========================================================
-      # 上传调试截图（出错时方便排查）
-      # ========================================================
       - name: Upload Debug Files
         uses: actions/upload-artifact@v4
-        if: always() # 无论成功失败都上传
+        if: always()
         with:
           name: debug-screenshots
           path: |
