@@ -1,61 +1,51 @@
-name: Altr Daily Auto Claim # 任务名称
+name: Zampto Daily Auto Claim # 任务名称
 
 on:
   schedule:
     # 定时任务：每天国际标准时间 01:00 (北京时间上午 09:00) 运行
     - cron: '0 1 * * *'
-  workflow_dispatch: # 允许你手动点击按钮触发测试
+  workflow_dispatch: # 允许手动点击按钮触发测试
 
 jobs:
   build:
-    runs-on: ubuntu-latest # 使用最新的 Ubuntu 服务器
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3 # 第一步：下载你的代码仓库
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v4 # 第二步：安装 Python 环境
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: | # 第三步：安装依赖库
+        run: |
           python -m pip install --upgrade pip
-          # 安装旧脚本的依赖（如果有的话）
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # 【重要】强制安装两个脚本都必须的 selenium 和 webdriver_manager
+          # 如果你的 zampto.py 用 Selenium，保留下面这行
           pip install selenium webdriver_manager
+          # 如果用 requests，也可以加上
+          pip install requests
 
       # ========================================================
-      # 旧脚本区域 (Altr 自动签到)
+      # Zampto 自动签到
       # ========================================================
-      - name: Altr 自动签到
-        env: 
-          # 请在 GitHub Secrets 中添加 ALTR_ACCOUNTS
-          ALTR_ACCOUNTS: ${{ secrets.ALTR_ACCOUNTS }}
-        run: python -u Altr.py # -u 参数保证日志实时输出
+      - name: Zampto 自动签到
+        env:
+          # 请在 GitHub Secrets 中添加 ZAMPTO_ACCOUNTS
+          ZAMPTO_ACCOUNTS: ${{ secrets.ZAMPTO_ACCOUNTS }}
+        run: python -u zampto.py
 
       # ========================================================
-      # 新脚本区域 (Zampto 自动续费)
-      # ========================================================
-     # - name: Zampto 自动续费
-      #  env:
-          # 读取你在 Secrets 里设置的 ZAMPTO_ACCOUNTS
-      #    ZAMPTO_ACCOUNTS: ${{ secrets.ZAMPTO_ACCOUNTS }}
-        # 运行新脚本，-u 参数保证日志实时输出
-      #  run: python -u zampto.py
-
-      # ========================================================
-      # 【新增】上传调试文件步骤
-      # 只有当 zampto.py 生成了截图或 html 文件时，这里才会上传
+      # 上传调试截图（出错时方便排查）
       # ========================================================
       - name: Upload Debug Files
-        uses: actions/upload-artifact@v4  # 使用官方插件上传文件
-        if: always()                      # 【关键】无论上面的脚本是否报错，这一步都会强制执行
+        uses: actions/upload-artifact@v4
+        if: always() # 无论成功失败都上传
         with:
-          name: debug-screenshots         # 下载时的压缩包名字
-          path: |                         # 指定要上传的文件模式
+          name: debug-screenshots
+          path: |
             *.png
             *.html
-          retention-days: 3               # 文件只保留3天，节省空间
+          retention-days: 3
