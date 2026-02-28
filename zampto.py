@@ -2,6 +2,7 @@ import os
 import time
 import sys
 import random
+import subprocess
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -9,16 +10,16 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.action_chains import ActionChains
 
+# ================= 配置区域 =================
 LOGIN_URL = "https://dash.zampto.net/"
-SERVER_IDS = ["3649"]
+SERVER_IDS = ["3649"]  # 多个服务器就加："3649", "1234"
 ACCOUNTS_ENV = os.environ.get("ZAMPTO_ACCOUNTS")
+# ===========================================
 
 def human_delay(a=1.5, b=3.5):
-    """模拟人类随机延迟"""
     time.sleep(random.uniform(a, b))
 
 def move_mouse_randomly(driver):
-    """随机移动鼠标，触发人类行为检测"""
     actions = ActionChains(driver)
     for _ in range(random.randint(3, 6)):
         x = random.randint(100, 800)
@@ -37,26 +38,31 @@ def run_renewal_for_user(username, password):
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
-    # GitHub Actions 必须无头模式
     options.add_argument('--headless=new')
 
     driver = None
     try:
-        # undetected_chromedriver 自动处理反检测
-        driver = uc.Chrome(options=options, use_subprocess=True, version_main=None)
+        # 自动读取系统 Chrome 版本号，强制匹配
+        try:
+            chrome_ver = subprocess.check_output(['google-chrome', '--version']).decode()
+        except:
+            chrome_ver = subprocess.check_output(['chromium-browser', '--version']).decode()
+        major = int(chrome_ver.strip().split()[-1].split('.')[0])
+        print(f">>> [系统] 检测到 Chrome 版本: {major}")
+
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=major)
         wait = WebDriverWait(driver, 30)
 
         # --- 登录 ---
         print(f">>> [登录] 打开页面: {LOGIN_URL}")
         driver.get(LOGIN_URL)
-        human_delay(2, 4)  # 等页面完全加载
+        human_delay(2, 4)
         move_mouse_randomly(driver)
 
         user_input = wait.until(EC.presence_of_element_located(
             (By.CSS_SELECTOR, "input[name='identifier'], input[name='email'], input[name='username']")
         ))
         human_delay(0.5, 1.5)
-        # 模拟人类逐字输入
         for char in username:
             user_input.send_keys(char)
             time.sleep(random.uniform(0.05, 0.15))
@@ -95,14 +101,12 @@ def run_renewal_for_user(username, password):
             print(f"\n--- 正在处理服务器 ID: {server_id} ---")
             driver.get(server_url)
 
-            # 【关键】停留足够长时间让 Turnstile 完成隐形验证
             print(">>> [等待] 停留页面让 Turnstile 完成后台验证...")
             human_delay(4, 7)
             move_mouse_randomly(driver)
             human_delay(2, 3)
 
             try:
-                # 找续费按钮并点击（弹出确认弹窗）
                 renew_btn = wait.until(EC.element_to_be_clickable(
                     (By.XPATH, "//a[contains(., 'Renew Server')] | //button[contains(., 'Renew Server')]")
                 ))
@@ -111,16 +115,15 @@ def run_renewal_for_user(username, password):
                 print(">>> [操作] 点击 'Renew Server' 按钮...")
                 renew_btn.click()
 
-                # 等待确认弹窗出现并点确认
                 human_delay(1, 2)
+
+                # 处理弹窗
                 try:
-                    # 如果是原生 alert
                     WebDriverWait(driver, 5).until(EC.alert_is_present())
                     alert = driver.switch_to.alert
-                    print(f">>> [弹窗] 捕获到: {alert.text}")
+                    print(f">>> [弹窗] 捕获到 alert: {alert.text}")
                     alert.accept()
                 except TimeoutException:
-                    # 如果是页面内自定义弹窗，找确认按钮
                     try:
                         confirm_btn = WebDriverWait(driver, 5).until(
                             EC.element_to_be_clickable((By.XPATH,
@@ -132,10 +135,9 @@ def run_renewal_for_user(username, password):
                     except TimeoutException:
                         print(">>> [弹窗] 未检测到弹窗，可能已自动处理")
 
-                # 等待结果
                 human_delay(3, 5)
 
-                # 检查是否成功（页面出现成功提示）
+                # 检查是否成功
                 try:
                     success_el = driver.find_element(By.ID, "renewalSuccess")
                     if success_el.is_displayed():
@@ -143,10 +145,9 @@ def run_renewal_for_user(username, password):
                         print(f"✅ [成功] 服务器 {server_id} 续费成功！")
                         print("------------------------------------------------")
                     else:
-                        print(f"⚠️ [警告] 续费结果不明确，请检查截图")
+                        print(f"⚠️ [警告] 续费结果不明确，已保存截图")
                         driver.save_screenshot(f"result_{server_id}.png")
                 except:
-                    # 找不到成功元素也截图留证
                     print(">>> [提示] 无法确认结果，已保存截图")
                     driver.save_screenshot(f"result_{server_id}.png")
 
