@@ -43,7 +43,7 @@ def run_renewal_for_user(username, password):
     driver = None
     try:
         # undetected_chromedriver 自动处理反检测
-        driver = uc.Chrome(options=options, use_subprocess=True)
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=None)
         wait = WebDriverWait(driver, 30)
 
         # --- 登录 ---
